@@ -1,0 +1,127 @@
+<?xml version = "1.0" encoding = "UTF-8" ?>
+<!--
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+  Oracle JDeveloper BPEL Designer 
+  
+  Created: Thu Feb 12 09:18:36 CET 2015
+  Author:  mapsadmin
+  Type: BPEL 2.0 Process
+  Purpose: Asynchronous BPEL Process
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+-->
+<process name="BPELProcess"
+         targetNamespace="http://xmlns.oracle.com/BusinessRules/BusinessRuleGlobals/BPELProcess"
+         xmlns="http://docs.oasis-open.org/wsbpel/2.0/process/executable"
+         xmlns:client="http://xmlns.oracle.com/BusinessRules/BusinessRuleGlobals/BPELProcess"
+         xmlns:ora="http://schemas.oracle.com/xpath/extension"
+         xmlns:ui="http://xmlns.oracle.com/soa/designer"
+         xmlns:bpelx="http://schemas.oracle.com/bpel/extension"
+         xmlns:bpel="http://docs.oasis-open.org/wsbpel/2.0/process/executable"
+         xmlns:ns1="http://xmlns.oracle.com/GlobalRules/GlobalRules_ervice"
+         xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:ns2="http://xmlns.oracle.com/bpel"
+         xmlns:ns3="http://www.example.org"
+         xmlns:xp20="http://www.oracle.com/XSL/Transform/java/oracle.tip.pc.services.functions.Xpath20"
+         xmlns:bpws="http://schemas.xmlsoap.org/ws/2003/03/business-process/"
+         xmlns:oraext="http://www.oracle.com/XSL/Transform/java/oracle.tip.pc.services.functions.ExtFunc"
+         xmlns:dvm="http://www.oracle.com/XSL/Transform/java/oracle.tip.dvm.LookupValue"
+         xmlns:hwf="http://xmlns.oracle.com/bpel/workflow/xpath"
+         xmlns:ids="http://xmlns.oracle.com/bpel/services/IdentityService/xpath"
+         xmlns:bpm="http://xmlns.oracle.com/bpmn20/extensions" xmlns:ess="http://xmlns.oracle.com/scheduler"
+         xmlns:xdk="http://schemas.oracle.com/bpel/extension/xpath/function/xdk"
+         xmlns:xref="http://www.oracle.com/XSL/Transform/java/oracle.tip.xref.xpath.XRefXPathFunctions"
+         xmlns:ldap="http://schemas.oracle.com/xpath/extension/ldap">
+
+    <import ui:processWSDL="true" namespace="http://xmlns.oracle.com/BusinessRules/BusinessRuleGlobals/BPELProcess" location="../WSDLs/BPELProcess.wsdl" importType="http://schemas.xmlsoap.org/wsdl/"/>
+    <!-- 
+      ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+        PARTNERLINKS                                                      
+        List of services participating in this BPEL process               
+      ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+    --> 
+    <partnerLinks>
+        <!-- 
+      The 'client' role represents the requester of this service. It is 
+      used for callback. The location and correlation information associated
+      with the client role are automatically set using WS-Addressing.
+    -->
+        <partnerLink name="bpelprocess_client" partnerLinkType="client:BPELProcess" myRole="BPELProcessProvider" partnerRole="BPELProcessRequester"/>
+        <partnerLink name="GlobalRules.GlobalRules_ervice" partnerLinkType="ns1:GlobalRules.GlobalRules_ervice"
+                     partnerRole="IDecisionService"/>
+    </partnerLinks>
+
+    <!-- 
+      ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+        VARIABLES                                                        
+        List of messages and XML documents used within this BPEL process 
+      ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+    -->
+    <variables>
+        <!-- Reference to the message passed as input during initiation -->
+        <variable name="inputVariable" messageType="client:BPELProcessRequestMessage"/>
+
+        <!-- Reference to the message that will be sent back to the requester during callback -->
+        <variable name="outputVariable" messageType="client:BPELProcessResponseMessage"/>
+        <variable name="retryCount" type="xsd:integer"/>
+        <variable name="retryDuration" type="xsd:string"/>
+    </variables>
+
+    <!-- 
+      ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+       ORCHESTRATION LOGIC                                               
+       Set of activities coordinating the flow of messages across the    
+       services integrated within this business process                  
+      ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+    -->
+    <sequence name="main">
+        <!-- Receive input from requestor. (Note: This maps to operation defined in BPELProcess.wsdl) -->
+        <receive name="receiveInput" partnerLink="bpelprocess_client" portType="client:BPELProcess" operation="process" variable="inputVariable" createInstance="yes"/>
+        <scope name="Rule1">
+            <bpelx:annotation>
+                <bpelx:pattern patternName="bpelx:decide"></bpelx:pattern>
+            </bpelx:annotation>
+            <variables>
+                <variable name="dsIn" messageType="ns1:callFunctionStatelessMessage"/>
+                <variable name="dsOut" messageType="ns1:callFunctionStatelessDecisionMessage"/>
+            </variables>
+            <sequence name="Sequence1">
+                <assign name="Facts_To_Rule_Service">
+                    <copy>
+                        <from variable="inputVariable" part="payload"><query>client:requestId</query></from>
+                        <to variable="dsIn" part="payload"><query>ns1:parameterList/client:process/client:requestId</query></to>
+                    </copy>
+                </assign>
+                <assign name="BPEL_Header">
+                    <copy>
+                        <from>"GlobalRules_ervice"</from>
+                        <to variable="dsIn" part="payload"><query>@name</query></to>
+                    </copy>
+                </assign>
+                <invoke name="Invoke" partnerLink="GlobalRules.GlobalRules_ervice" portType="ns1:IDecisionService"
+                        operation="callFunctionStateless" inputVariable="dsIn" outputVariable="dsOut"/>
+                <assign name="Rule_Service_To_Facts">
+                    <copy>
+                        <from variable="dsOut" part="payload"><query>ns1:resultList/ns3:parameters/ns3:retryCount</query></from>
+                        <to variable="retryCount"/>
+                    </copy>
+                    <copy>
+                        <from variable="dsOut" part="payload"><query>ns1:resultList/ns3:parameters/ns3:retryDelay</query></from>
+                        <to variable="retryDuration"/>
+                    </copy>
+                </assign>
+            </sequence>
+        </scope>
+        <forEach parallel="no" counterName="ForEach1Counter" name="ForEach1">
+            <startCounterValue>0</startCounterValue>
+            <finalCounterValue>$retryCount</finalCounterValue>
+            <scope name="Scope1">
+                <wait name="Wait1">
+                    <for>$retryDuration</for>
+                </wait>
+            </scope>
+        </forEach>
+        <!-- 
+          Asynchronous callback to the requester. (Note: the callback location and correlation id is transparently handled using WS-addressing.)
+        -->
+        <invoke name="callbackClient" partnerLink="bpelprocess_client" portType="client:BPELProcessCallback" operation="processResponse" inputVariable="outputVariable"/>
+    </sequence>
+</process>
